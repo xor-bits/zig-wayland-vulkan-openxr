@@ -22,127 +22,131 @@ pub const Server = struct {
     renderer: *wlr.Renderer,
     allocator: *wlr.Allocator,
     scene: *wlr.Scene,
+    scene_output_layout: *wlr.SceneOutputLayout,
 
-    socket_buf: [11]u8,
-    socket: ?[]const u8,
-
-    xdg_shell: *wlr.XdgShell,
-    new_xdg_toplevel: wl.Listener(*wlr.XdgToplevel),
-    new_xdg_popup: wl.Listener(*wlr.XdgPopup),
-    toplevels: wl.list.Head(Toplevel, .link),
+    socket_buf: [11]u8 = undefined,
+    socket: ?[]const u8 = null,
 
     output_layout: *wlr.OutputLayout,
-    scene_output_layout: *wlr.SceneOutputLayout,
-    outputs: wl.list.Head(Output, .link),
-    new_output: wl.Listener(*wlr.Output),
+    outputs: wl.list.Head(Output, .link) = undefined,
+    new_output: wl.Listener(*wlr.Output) =
+        wl.Listener(*wlr.Output).init(newOutput),
+
+    xdg_shell: *wlr.XdgShell,
+    toplevels: wl.list.Head(Toplevel, .link) = undefined,
+    new_xdg_toplevel: wl.Listener(*wlr.XdgToplevel) =
+        wl.Listener(*wlr.XdgToplevel).init(newXdgToplevel),
+    new_xdg_popup: wl.Listener(*wlr.XdgPopup) =
+        wl.Listener(*wlr.XdgPopup).init(newXdgPopup),
 
     cursor: *wlr.Cursor,
     cursor_mgr: *wlr.XcursorManager,
-    cursor_motion: wl.Listener(*wlr.Pointer.event.Motion),
-    cursor_motion_absolute: wl.Listener(*wlr.Pointer.event.MotionAbsolute),
-    cursor_button: wl.Listener(*wlr.Pointer.event.Button),
-    cursor_axis: wl.Listener(*wlr.Pointer.event.Axis),
-    cursor_frame: wl.Listener(*wlr.Cursor),
+    cursor_motion: wl.Listener(*wlr.Pointer.event.Motion) =
+        wl.Listener(*wlr.Pointer.event.Motion).init(cursorMotion),
+    cursor_motion_absolute: wl.Listener(*wlr.Pointer.event.MotionAbsolute) =
+        wl.Listener(*wlr.Pointer.event.MotionAbsolute).init(cursorMotionAbsolute),
+    cursor_button: wl.Listener(*wlr.Pointer.event.Button) =
+        wl.Listener(*wlr.Pointer.event.Button).init(cursorButton),
+    cursor_axis: wl.Listener(*wlr.Pointer.event.Axis) =
+        wl.Listener(*wlr.Pointer.event.Axis).init(cursorAxis),
+    cursor_frame: wl.Listener(*wlr.Cursor) =
+        wl.Listener(*wlr.Cursor).init(cursorFrame),
 
     seat: *wlr.Seat,
-    keyboards: wl.list.Head(Keyboard, .link),
-    new_input: wl.Listener(*wlr.InputDevice),
-    request_set_cursor: wl.Listener(*wlr.Seat.event.RequestSetCursor),
-    request_set_selection: wl.Listener(*wlr.Seat.event.RequestSetSelection),
+    keyboards: wl.list.Head(Keyboard, .link) = undefined,
+    new_input: wl.Listener(*wlr.InputDevice) =
+        wl.Listener(*wlr.InputDevice).init(newInput),
+    request_set_cursor: wl.Listener(*wlr.Seat.event.RequestSetCursor) =
+        wl.Listener(*wlr.Seat.event.RequestSetCursor).init(requestSetCursor),
+    request_set_selection: wl.Listener(*wlr.Seat.event.RequestSetSelection) =
+        wl.Listener(*wlr.Seat.event.RequestSetSelection).init(requestSetSelection),
 
-    cursor_mode: enum { passthrough, move, resize },
-    grabbed_toplevel: ?*Toplevel,
+    cursor_mode: enum { passthrough, move, resize } = .passthrough,
+    grabbed_toplevel: ?*Toplevel = null,
     grab: struct {
         x: f64,
         y: f64,
-    },
-    grab_box: wlr.Box,
-    resize_edges: wlr.Edges,
+    } = .{ .x = 0.0, .y = 0.0 },
+    grab_box: wlr.Box = undefined,
+    resize_edges: wlr.Edges = .{},
 
     const Self = @This();
 
-    pub fn init(server: *Server) anyerror!void {
+    pub fn init(server: *Self) anyerror!void {
         // wayland display is managed by libwayland,
         // it handles accepting clients from the unix socket,
         // managing wayland globals, and so on
-        server.wl_server = try wl.Server.create();
+        const wl_server = try wl.Server.create();
 
         // backens is a wlroots feature that abstracts the input and output hardware
         // autocreate creates the most suitable backend depending on the current env,
         // like an x11 window if x11 server is running, or a wayland window if another
         // wayland server is running, or whatever
-        const loop = server.wl_server.getEventLoop();
-        server.backend = try wlr.Backend.autocreate(loop, null);
+        const loop = wl_server.getEventLoop();
+        const backend = try wlr.Backend.autocreate(loop, null);
 
         // GLes2 (I want to use Vulkan)
-        server.renderer = try wlr.Renderer.autocreate(server.backend);
-        try server.renderer.initServer(server.wl_server);
+        const renderer = try wlr.Renderer.autocreate(backend);
+
+        // wlroots util to manage the (layout) arrangement of physical screens
+        const output_layout = try wlr.OutputLayout.create(wl_server);
+        const scene = try wlr.Scene.create();
+        const scene_output_layout = try scene.attachOutputLayout(output_layout);
 
         // ready made wlroots handlers
         // compositor allocates surfaces for clients
-        _ = try wlr.Compositor.create(server.wl_server, 6, server.renderer);
-        _ = try wlr.Subcompositor.create(server.wl_server);
+        _ = try wlr.Compositor.create(wl_server, 6, renderer);
+        _ = try wlr.Subcompositor.create(wl_server);
         // data device manager handles clipboard, clients cannot use the clipboard without approval
-        _ = try wlr.DataDeviceManager.create(server.wl_server);
+        _ = try wlr.DataDeviceManager.create(wl_server);
 
-        server.allocator = try wlr.Allocator.autocreate(server.backend, server.renderer);
+        const allocator = try wlr.Allocator.autocreate(backend, renderer);
 
-        // wlroots util to manage the (layout) arrangement of physical screens
-        server.output_layout = try wlr.OutputLayout.create(server.wl_server);
+        server.* = Self{
+            .wl_server = wl_server,
+            .backend = backend,
+            .renderer = renderer,
+            .allocator = allocator,
+            .scene = scene,
+            .scene_output_layout = scene_output_layout,
 
-        server.scene = try wlr.Scene.create();
-        server.scene_output_layout = try server.scene.attachOutputLayout(server.output_layout);
+            .output_layout = output_layout,
+
+            .xdg_shell = try wlr.XdgShell.create(wl_server, 2),
+            .cursor = try wlr.Cursor.create(),
+            .cursor_mgr = try wlr.XcursorManager.create(null, 24),
+            .seat = try wlr.Seat.create(wl_server, "default"),
+        };
+
+        try server.renderer.initServer(server.wl_server);
 
         // listener for new outputs
         server.outputs.init();
-        server.new_output = wl.Listener(*wlr.Output).init(newOutput);
         server.backend.events.new_output.add(&server.new_output);
 
         // list of windows + xdg-shell (protocol for app windows)
         server.toplevels.init();
-        server.xdg_shell = try wlr.XdgShell.create(server.wl_server, 2);
-        server.new_xdg_toplevel = wl.Listener(*wlr.XdgToplevel).init(newXdgToplevel);
         server.xdg_shell.events.new_toplevel.add(&server.new_xdg_toplevel);
-        server.new_xdg_popup = wl.Listener(*wlr.XdgPopup).init(newXdgPopup);
         server.xdg_shell.events.new_popup.add(&server.new_xdg_popup);
 
         // let wlroots handle the cursor image on screen
-        server.cursor = try wlr.Cursor.create();
         server.cursor.attachOutputLayout(server.output_layout);
 
         // let wlroots handle xcursor themes
-        server.cursor_mgr = try wlr.XcursorManager.create(null, 24);
         try server.cursor_mgr.load(1);
 
         // wlr_cursor *only* displays the cursor image, it doesnt move it
-        server.cursor_motion = wl.Listener(*wlr.Pointer.event.Motion).init(cursorMotion);
         server.cursor.events.motion.add(&server.cursor_motion);
-        server.cursor_motion_absolute = wl.Listener(*wlr.Pointer.event.MotionAbsolute).init(cursorMotionAbsolute);
         server.cursor.events.motion_absolute.add(&server.cursor_motion_absolute);
-        server.cursor_button = wl.Listener(*wlr.Pointer.event.Button).init(cursorButton);
         server.cursor.events.button.add(&server.cursor_button);
-        server.cursor_axis = wl.Listener(*wlr.Pointer.event.Axis).init(cursorAxis);
         server.cursor.events.axis.add(&server.cursor_axis);
-        server.cursor_frame = wl.Listener(*wlr.Cursor).init(cursorFrame);
         server.cursor.events.frame.add(&server.cursor_frame);
-
-        server.cursor_mode = .passthrough;
-        server.grabbed_toplevel = null;
-        server.grab = .{ .x = 0, .y = 0 };
-        server.grab_box = undefined;
-        server.resize_edges = .{};
 
         // set up a seat, seat = up to 1 keyboard, pointer, touch and drawing tablet
         server.keyboards.init();
-        server.seat = try wlr.Seat.create(server.wl_server, "default");
-        server.new_input = wl.Listener(*wlr.InputDevice).init(newInput);
         server.backend.events.new_input.add(&server.new_input);
-        server.request_set_cursor = wl.Listener(*wlr.Seat.event.RequestSetCursor).init(requestSetCursor);
         server.seat.events.request_set_cursor.add(&server.request_set_cursor);
-        server.request_set_selection = wl.Listener(*wlr.Seat.event.RequestSetSelection).init(requestSetSelection);
         server.seat.events.request_set_selection.add(&server.request_set_selection);
-
-        server.socket = null;
     }
 
     pub fn deinit(server: *Self) void {
