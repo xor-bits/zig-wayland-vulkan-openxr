@@ -4,6 +4,8 @@ const wl = @import("wayland").server.wl;
 const wlr = @import("wlroots");
 const xkb = @import("xkbcommon");
 
+const graphics = @import("graphics.zig");
+
 const Output = @import("output.zig").Output;
 const Keyboard = @import("keyboard.zig").Keyboard;
 // const Pointer = @import("pointer.zig").Pointer;
@@ -20,6 +22,7 @@ pub const Server = struct {
     wl_server: *wl.Server,
     backend: *wlr.Backend,
     renderer: *wlr.Renderer,
+    compositor: *wlr.Compositor,
     allocator: *wlr.Allocator,
     scene: *wlr.Scene,
     scene_output_layout: *wlr.SceneOutputLayout,
@@ -86,6 +89,7 @@ pub const Server = struct {
         const backend = try wlr.Backend.autocreate(loop, null);
 
         // GLes2 (I want to use Vulkan)
+        _ = try graphics.CustomRenderer.autocreate(backend);
         const renderer = try wlr.Renderer.autocreate(backend);
 
         // wlroots util to manage the (layout) arrangement of physical screens
@@ -95,7 +99,7 @@ pub const Server = struct {
 
         // ready made wlroots handlers
         // compositor allocates surfaces for clients
-        _ = try wlr.Compositor.create(wl_server, 6, renderer);
+        const compositor = try wlr.Compositor.create(wl_server, 6, renderer);
         _ = try wlr.Subcompositor.create(wl_server);
         // data device manager handles clipboard, clients cannot use the clipboard without approval
         _ = try wlr.DataDeviceManager.create(wl_server);
@@ -106,6 +110,7 @@ pub const Server = struct {
             .wl_server = wl_server,
             .backend = backend,
             .renderer = renderer,
+            .compositor = compositor,
             .allocator = allocator,
             .scene = scene,
             .scene_output_layout = scene_output_layout,
